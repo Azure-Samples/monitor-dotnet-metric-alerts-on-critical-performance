@@ -4,18 +4,18 @@ languages:
 - csharp
 products:
 - azure
-services: Monitor
-platforms: dotnet
-author: yaohaizh
+extensions:
+- services: Monitor
+- platforms: dotnet
 ---
 
 # Configuring metric alerts to be triggered on potential performance downgrade. #
 
-          This sample shows examples of configuring Metric Alerts for WebApp instance performance monitoring through app service plan.
-           - Create a App Service plan
-           - Setup an action group to trigger a notification to the heavy performance alerts
-           - Create auto-mitigated metric alerts for the App Service plan when
-             - average CPUPercentage on any of Web App instance (where Instance = ) over the last 5 minutes is above 80%
+ This sample shows examples of configuring Metric Alerts for WebApp instance performance monitoring through app service plan.
+  - Create a App Service plan
+  - Setup an action group to trigger a notification to the heavy performance alerts
+  - Create auto-mitigated metric alerts for the App Service plan when
+    - average CPUPercentage on any of Web App instance (where Instance = ) over the last 5 minutes is above 80%
 
 
 ## Running this Sample ##
