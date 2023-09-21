@@ -1,20 +1,16 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
+﻿// Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License. See License.txt in the project root for license information.
 
-using Microsoft.Azure.Management.Fluent;
-using Microsoft.Azure.Management.ResourceManager.Fluent;
-using Microsoft.Azure.Management.ResourceManager.Fluent.Core;
-using Microsoft.Azure.Management.Samples.Common;
-using Microsoft.Azure.Management.Storage.Fluent.Models;
-using Microsoft.WindowsAzure.Storage;
-using Microsoft.WindowsAzure.Storage.Blob;
-using Microsoft.WindowsAzure.Storage.Shared.Protocol;
-using System;
-using System.Linq;
-using System.IO;
-using Microsoft.Azure.Management.AppService.Fluent;
-using Microsoft.Azure.Management.Monitor.Fluent.Models;
-using System.Collections.Generic;
+using Azure;
+using Azure.Core;
+using Azure.Identity;
+using Azure.ResourceManager;
+using Azure.ResourceManager.Resources;
+using Azure.ResourceManager.Samples.Common;
+using Azure.ResourceManager.Monitor;
+using Azure.ResourceManager.Monitor.Models;
+using Azure.ResourceManager.AppService.Models;
+using Azure.ResourceManager.AppService;
 
 namespace WebAppPerformanceMonitoringAlerts
 {
@@ -27,148 +23,156 @@ namespace WebAppPerformanceMonitoringAlerts
          *  - Create auto-mitigated metric alerts for the App Service plan when
          *    - average CPUPercentage on any of Web App instance (where Instance = *) over the last 5 minutes is above 80%
          */
-        public static void RunSample(IAzure azure)
+        private static ResourceIdentifier? _resourceGroupId = null;
+        public static async Task RunSample(ArmClient client)
         {
-            string storageAccountName = SdkContext.RandomResourceName("saMonitor", 15);
-            string rgName = SdkContext.RandomResourceName("rgMonitor", 15);
-
             try
             {
                 // ============================================================
+
                 // Create an App Service plan
-                Utilities.Log("Creating App Service plan");
+              
+                // Create a resourceGroup
+                SubscriptionResource subscription = await client.GetDefaultSubscriptionAsync();
+                var rgName = Utilities.CreateRandomName("rgMonitor");
+                Utilities.Log($"creating a resource group with name : {rgName}...");
+                var rgLro = await subscription.GetResourceGroups().CreateOrUpdateAsync(WaitUntil.Completed, rgName, new ResourceGroupData(AzureLocation.EastUS2));
+                var resourceGroup = rgLro.Value;
+                _resourceGroupId = resourceGroup.Id;
+                Utilities.Log("Created a resource group with name: " + resourceGroup.Data.Name);
 
-                var servicePlan = azure.AppServices.AppServicePlans.Define("HighlyAvailableWebApps")
-                        .WithRegion(Region.USEast2)
-                        .WithNewResourceGroup(rgName)
-                        .WithPricingTier(PricingTier.PremiumP1)
-                        .WithOperatingSystem(Microsoft.Azure.Management.AppService.Fluent.OperatingSystem.Windows)
-                        .Create();
-
-                Utilities.Log("App Service plan created:");
-                Utilities.Print(servicePlan);
+                //Create a App Service Plan
+                Utilities.Log("Creating app service plan");
+                var appServicePlanCollection = resourceGroup.GetAppServicePlans();
+                var appServicePlanName = Utilities.CreateRandomName("HighlyAvailableWebApps");
+                var appServicePlanData = new AppServicePlanData(AzureLocation.EastUS2)
+                {
+                    Sku = new AppServiceSkuDescription
+                    {
+                        Name = "P1",
+                        Tier = "Premium",
+                        Capacity = 1
+                    },
+                    IsReserved = false,
+                    Kind = "app"
+                };
+                var appServicePlan = (await appServicePlanCollection.CreateOrUpdateAsync(WaitUntil.Completed, appServicePlanName, appServicePlanData)).Value;
+                Utilities.Log("Created app service plan with name:" + appServicePlan.Data.Name);
 
                 // ============================================================
-                // Create an action group to send notifications in case metric alert condition will be triggered
-                var ag = azure.ActionGroups.Define("criticalPerformanceActionGroup")
-                        .WithExistingResourceGroup(rgName)
-                        .DefineReceiver("tierOne")
-                            .WithPushNotification("ops_on_duty@performancemonitoring.com")
-                            .WithEmail("ops_on_duty@performancemonitoring.com")
-                            .WithSms("1", "4255655665")
-                            .WithVoice("1", "2062066050")
-                            .WithWebhook("https://www.weeneedmorepower.performancemonitoring.com")
-                            .Attach()
-                        .DefineReceiver("tierTwo")
-                            .WithEmail("ceo@performancemonitoring.com")
-                            .Attach()
-                        .Create();
-                Utilities.Print(ag);
+               
+                // Create an action group to send notifications in case activity log alert condition will be triggered
+                Utilities.Log("Creating actionGroup...");
+                var actionGroupName = Utilities.CreateRandomName("criticalPerformanceActionGroup");
+                var actionGroupCollection = resourceGroup.GetActionGroups();
+                Uri uri = new Uri("https://www.weeneedmorepower.performancemonitoring.com");
+                var actionGroupData = new ActionGroupData(AzureLocation.NorthCentralUS)
+                {
+                    GroupShortName = "AG",
+                    IsEnabled = true,
+                    AzureAppPushReceivers =
+                    {
+                        new MonitorAzureAppPushReceiver("MAAPRtierOne","ops_on_duty@performancemonitoring.com")
+                    },
+                    EmailReceivers =
+                    {
+                        new MonitorEmailReceiver("MERtierOne","ops_on_duty@performancemonitoring.com"),
+                        new MonitorEmailReceiver("MERtierTwo","ceo@performancemonitoring.com")
+                    },
+                    SmsReceivers =
+                    {
+                        new MonitorSmsReceiver("MSRtierOne","1","4255655665")
+                    },
+                    VoiceReceivers =
+                    {
+                        new MonitorVoiceReceiver("MVRtierOne","1","2062066050")
+                    },
+                    WebhookReceivers =
+                    {
+                        new MonitorWebhookReceiver("MWRtierOne",uri)
+                    }
+                };
+                var actionGroup = (await actionGroupCollection.CreateOrUpdateAsync(WaitUntil.Completed, actionGroupName, actionGroupData)).Value;
+                Utilities.Log("Created actionGroup with name:" + actionGroup.Data.Name);
 
                 // ============================================================
+
                 // Set a trigger to fire each time
-                var ma = azure.AlertRules.MetricAlerts.Define("Critical performance alert")
-                    .WithExistingResourceGroup(rgName)
-                    .WithTargetResource(servicePlan.Id)
-                    .WithPeriod(TimeSpan.FromMinutes(5))
-                    .WithFrequency(TimeSpan.FromMinutes(1))
-                    .WithAlertDetails(3, "This alert rule is for U5 - Single resource-multiple criteria - with dimensions - with star")
-                    .WithActionGroups(ag.Id)
-                    .DefineAlertCriteria("Metric1")
-                            .WithMetricName("CPUPercentage", "Microsoft.Web/serverfarms")
-                            .WithCondition(MetricAlertRuleTimeAggregation.Total, MetricAlertRuleCondition.GreaterThan, 80)
-                            .WithDimension("Instance", "*")
-                            .Attach()
-                    .Create();
 
-                Utilities.Print(ma);
+                //Create MetricAlerts
+                Utilities.Log("Creating MetricAlerts...");
+                var metricAlertsCollection = resourceGroup.GetMetricAlerts();
+                var metricAlertName = Utilities.CreateRandomName("metricAlert");
+                var scopes = new List<string>()
+                {
+                    appServicePlan.Id,
+                };
+                var criteria = new MetricAlertSingleResourceMultipleMetricCriteria()
+                {
+                   AllOf =
+                    {
+                        new MetricCriteria("Metric1", "CPUPercentage", MetricCriteriaTimeAggregationType.Total, MetricCriteriaOperator.GreaterThan, 80)
+                        {
+                            Dimensions =
+                            {
+                                new Azure.ResourceManager.Monitor.Models.MetricDimension("Instance","Include",new List<string> {"*"})
+                            }
+                        }
+                    }
+                };
+                var metricAlertData = new MetricAlertData("global",3,true,scopes,TimeSpan.FromMinutes(1),TimeSpan.FromMinutes(5),criteria)
+                {
+                    Actions =
+                    {
+                        new MetricAlertAction()
+                        {
+                            ActionGroupId = actionGroup.Id,
+                            
+                        }
+                    },
+                    Severity = 3,
+                    Description = "This alert rule is for U5 - Single resource-multiple criteria - with dimensions - with star",
+                };
+                var metricAlerts = (await metricAlertsCollection.CreateOrUpdateAsync(WaitUntil.Completed, metricAlertName, metricAlertData)).Value;
+                Utilities.Log("Created MetricAlerts with Name : " + metricAlerts.Data.Name);
             }
             finally
             {
-                if (azure.ResourceGroups.GetByName(rgName) != null)
+                try
                 {
-                    Utilities.Log("Deleting Resource Group: " + rgName);
-                    azure.ResourceGroups.BeginDeleteByName(rgName);
-                    Utilities.Log("Deleted Resource Group: " + rgName);
+                    if (_resourceGroupId is not null)
+                    {
+                        Utilities.Log($"Deleting Resource Group: {_resourceGroupId}");
+                        await client.GetResourceGroupResource(_resourceGroupId).DeleteAsync(WaitUntil.Completed);
+                        Utilities.Log($"Deleted Resource Group: {_resourceGroupId}");
+                    }
                 }
-                else
+                catch (NullReferenceException)
                 {
                     Utilities.Log("Did not create any resources in Azure. No clean up is necessary");
                 }
+                catch (Exception g)
+                {
+                    Utilities.Log(g);
+                }
             }
         }
-
-        public static void Main(string[] args)
+        public static async Task Main(string[] args)
         {
             try
             {
-                //=================================================================
-                // Authenticate
-                var credentials = SdkContext.AzureCredentialsFactory.FromFile(Environment.GetEnvironmentVariable("AZURE_AUTH_LOCATION"));
-
-                var azure = Azure
-                    .Configure()
-                    .WithLogLevel(HttpLoggingDelegatingHandler.Level.Basic)
-                    .Authenticate(credentials)
-                    .WithDefaultSubscription();
-
-                // Print selected subscription
-                Utilities.Log("Selected subscription: " + azure.SubscriptionId);
-
-                RunSample(azure);
+                var clientId = Environment.GetEnvironmentVariable("CLIENT_ID");
+                var clientSecret = Environment.GetEnvironmentVariable("CLIENT_SECRET");
+                var tenantId = Environment.GetEnvironmentVariable("TENANT_ID");
+                var subscription = Environment.GetEnvironmentVariable("SUBSCRIPTION_ID");
+                ClientSecretCredential credential = new ClientSecretCredential(tenantId, clientId, clientSecret);
+                ArmClient client = new ArmClient(credential, subscription);
+                await RunSample(client);
             }
-            catch (Exception ex)
+            catch (Exception e)
             {
-                Utilities.Log(ex);
+                Utilities.Log(e);
             }
-        }
-
-        private static void AddBlobTransactions(string storageConnectionString)
-        {
-
-            // Upload the script file as block blob
-            //
-            var account = CloudStorageAccount.Parse(storageConnectionString);
-            var cloudBlobClient = account.CreateCloudBlobClient();
-            var container = cloudBlobClient.GetContainerReference("scripts");
-            container.CreateIfNotExistsAsync().GetAwaiter().GetResult();
-
-            var serviceProps = cloudBlobClient.GetServicePropertiesAsync().GetAwaiter().GetResult();
-
-            // configure Storage logging and metrics
-            serviceProps.Logging = new LoggingProperties
-                                    {
-                                        LoggingOperations = LoggingOperations.All,
-                                        RetentionDays = 2,
-                                        Version = "1.0"
-                                    };
-
-            var metricProps = new MetricsProperties
-                                {
-                                    MetricsLevel = MetricsLevel.ServiceAndApi,
-                                    RetentionDays = 2,
-                                    Version = "1.0"
-                                };
-
-            serviceProps.HourMetrics = metricProps;
-            serviceProps.MinuteMetrics = metricProps;
-
-            // Set the default service version to be used for anonymous requests.
-            serviceProps.DefaultServiceVersion = "2015-04-05";
-
-            // Set the service properties.
-            cloudBlobClient.SetServicePropertiesAsync(serviceProps).GetAwaiter().GetResult();
-            var containerPermissions = new BlobContainerPermissions();
-            // Include public access in the permissions object
-            containerPermissions.PublicAccess = BlobContainerPublicAccessType.Container;
-            // Set the permissions on the container
-            container.SetPermissionsAsync(containerPermissions).GetAwaiter().GetResult();
-
-            var blob = container.GetBlockBlobReference("install_apache.sh");
-            blob.UploadFromFileAsync(Path.Combine(Utilities.ProjectPath, "Asset", "install_apache.sh")).GetAwaiter().GetResult();
-
-            // give sometime for the infrastructure to process the records and fit into time grain.
-            SdkContext.DelayProvider.Delay(6 * 60000);
         }
     }
 }
