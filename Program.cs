@@ -30,8 +30,6 @@ namespace WebAppPerformanceMonitoringAlerts
             {
                 // ============================================================
 
-                // Create an App Service plan
-              
                 // Create a resourceGroup
                 SubscriptionResource subscription = await client.GetDefaultSubscriptionAsync();
                 var rgName = Utilities.CreateRandomName("rgMonitor");
@@ -41,7 +39,7 @@ namespace WebAppPerformanceMonitoringAlerts
                 _resourceGroupId = resourceGroup.Id;
                 Utilities.Log("Created a resource group with name: " + resourceGroup.Data.Name);
 
-                //Create a App Service Plan
+                //Create an App Service Plan
                 Utilities.Log("Creating app service plan");
                 var appServicePlanCollection = resourceGroup.GetAppServicePlans();
                 var appServicePlanName = Utilities.CreateRandomName("HighlyAvailableWebApps");
@@ -99,7 +97,7 @@ namespace WebAppPerformanceMonitoringAlerts
 
                 // Set a trigger to fire each time
 
-                //Create MetricAlerts
+                // Create MetricAlerts
                 Utilities.Log("Creating MetricAlerts...");
                 var metricAlertsCollection = resourceGroup.GetMetricAlerts();
                 var metricAlertName = Utilities.CreateRandomName("metricAlert");
